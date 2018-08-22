@@ -1,0 +1,142 @@
+package main
+ 
+import (
+        "flag"
+        "fmt"
+        "github.com/prometheus/client_golang/prometheus"
+        "github.com/prometheus/client_golang/prometheus/promhttp"
+        "io/ioutil"
+        "log"
+        "net/http"
+        _ "net/http/pprof"
+        "os"
+        "path/filepath"
+        "sort"
+       "strconv"
+        "strings"
+        "time"
+)
+ 
+type kv struct {
+        Key   string
+        Value int
+}
+ 
+var ProcStat = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+        Name: "ProcessStat",
+        Help: "Process name and cpu usage",
+},
+        []string{"cpustats"},
+)
+ 
+var (
+        verbose   bool
+        elements  int
+        procinfos = map[string]int{}
+        procnow   = map[string]int{}
+)
+ 
+func init() {
+        prometheus.MustRegister(ProcStat)
+}
+ 
+func stat() {
+        matches, err := filepath.Glob("/proc/[0-9]*/stat")
+ 
+        if err != nil {
+                fmt.Println(err)
+        }
+        // empty procnow
+        for k := range procnow {
+                delete(procnow, k)
+                ProcStat.DeleteLabelValues(k)
+        }
+        //fmt.Println(matches)
+        for _, p := range matches {
+                stats, missing := ioutil.ReadFile(p)
+                if missing != nil {
+                        continue
+                }
+                fields := strings.Fields(string(stats))
+                x := len(p) - 5
+                process_name := fmt.Sprintf("%s(%s)", strings.Replace(strings.Replace(fields[1], "(", "", 1), ")", "", 1), p[6:x])
+                u_usage, _ := strconv.Atoi(fields[13])
+                s_usage, _ := strconv.Atoi(fields[14])
+                t_usage := u_usage + s_usage
+                // calculate variations
+                if value, ok := procinfos[process_name]; ok {
+                        //fmt.Printf("%s, prev %d, now: %d\n", process_name, value, t_usage)
+                        new_usage := t_usage - value
+                        if t_usage > 0 {
+                                procnow[process_name] = new_usage
+                        }
+                }
+                //update 'historic' map
+                procinfos[process_name] = t_usage
+ 
+        }
+}
+ 
+func top() {
+        stat()
+        if len(procnow) == 0 {
+                log.Println("All idle!")
+        } else {
+                var ss []kv
+                for k, v := range procnow {
+                        ss = append(ss, kv{k, v})
+                }
+ 
+                sort.Slice(ss, func(i, j int) bool {
+                        return ss[i].Value > ss[j].Value
+                })
+ 
+                for _, kv := range ss[:elements] {
+                        if verbose {
+                                fmt.Printf("%s, %d\n", kv.Key, kv.Value)
+                        }
+                        ProcStat.WithLabelValues(kv.Key).Set(float64(kv.Value))
+                }
+        }
+ 
+}
+ 
+func main() {
+        flag.IntVar(&elements, "n", 10, "process to display")
+        addr := flag.String("l", ":9098", "The address and port to listen on for HTTP requests.")
+        interval := flag.Int("d", 5, "update interval")
+        flag.BoolVar(&verbose, "v", false, "verbose on")
+        flag.Parse()
+        log.Printf("Metrics will be exposed on %s\n", *addr)
+        log.Printf("/proc scanning every %d seconds\n", *interval)
+ 
+        if *interval > 0 {
+                //set a x seconds ticker
+                ticker := time.NewTicker(time.Duration(*interval) * time.Second)
+ 
+                go func() {
+                        for t := range ticker.C {
+                                if verbose {
+                                        log.Println("\n\nStats at", t)
+                               }
+                                top()
+                        }
+                }()
+        }
+ 
+        http.Handle("/metrics", promhttp.Handler())
+        http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+                w.Write([]byte(`
+         <html>
+         <head><title>Top Exporter</title></head>
+         <body>
+         <h1>Top Exporter</h1>
+         <h2>parameters '` + strings.Join(os.Args, " ") + `'</h2>
+         <p><a href='/metrics'><b>Metrics</b></a></p>
+         </body>
+         </html>
+         `))
+        })
+        log.Fatal(http.ListenAndServe(*addr, nil))
+ 
+}
