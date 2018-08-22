@@ -5,7 +5,7 @@ The first version used github.com/shirou/gopsutil/process which is widely used b
 So I wrote another (top_exporter_agnostic) which scan /proc and list the processes based on CPU time used without any percentage calculation which varies wildly from tool to tool.
 
 For reference see:
-* https://rosettacode.org/wiki/Linux_CPU_utilizatio
+* https://rosettacode.org/wiki/Linux_CPU_utilization
 * https://jaroslawr.com/articles/mastering-linux-performance-cpu-time-and-cpu-usage/
 * https://github.com/uber-common/cpustat
 
